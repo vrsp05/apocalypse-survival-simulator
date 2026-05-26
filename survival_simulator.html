@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Survival Simulator</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            background-color: #1a110a;
+            color: #c4a482;
+            font-family: 'Courier New', Courier, monospace;
+            display: flex;
+            flex-direction: row;
+            justify-content: center;
+            align-items: center;
+            height: 100dvh; /* Dynamic viewport height handles mobile URL bars */
+            margin: 0;
+            overflow: hidden;
+        }
+        #ui-panel {
+            background: #2a1e17;
+            padding: 20px;
+            border-radius: 5px;
+            border: 2px solid #5c3a21;
+            margin: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.8);
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            width: 250px;
+            z-index: 10;
+            flex-shrink: 0; /* Prevents squishing on small screens */
+            overflow-y: auto;
+            max-height: 95vh;
+        }
+        input, select, button {
+            padding: 10px;
+            border-radius: 3px;
+            border: 1px solid #4a2e1b;
+            background: #17100b;
+            color: #d8c3a5;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 16px;
+            width: 100%;
+        }
+        button {
+            background: #6e2c14;
+            color: #f0e6d2;
+            cursor: pointer;
+            font-weight: bold;
+            border: 1px solid #8a3a19;
+            transition: background 0.2s;
+        }
+        button:hover { background: #8a3a19; }
+        
+        #canvas-container {
+            flex: 1; /* Take up remaining space */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 10px;
+            width: 100%;
+            height: 100%;
+            min-width: 0; /* Crucial for flexbox child constraints */
+            min-height: 0; /* Crucial for flexbox child constraints */
+        }
+        canvas {
+            background-color: #2b221d;
+            border: 3px solid #140d08;
+            border-radius: 5px;
+            box-shadow: inset 0 0 50px rgba(0,0,0,0.8), 0 4px 15px rgba(0,0,0,0.8);
+            max-width: 100%;
+            max-height: 100%;
+            display: block;
+        }
+        label { color: #c4a482; font-size: 14px; font-weight: bold; display: block; margin-bottom: 4px; }
+        
+        @media (max-width: 768px) {
+            body {
+                flex-direction: column;
+                justify-content: flex-start;
+            }
+            #ui-panel {
+                width: 95%;
+                max-width: 600px;
+                margin: 5px;
+                padding: 10px;
+                flex-direction: row;
+                flex-wrap: wrap;
+                justify-content: space-between;
+                align-items: flex-end;
+                gap: 8px;
+            }
+            #ui-panel h2 { display: none; }
+            .input-group {
+                display: flex;
+                flex-direction: column;
+                gap: 0px;
+                flex: 1;
+                min-width: 70px;
+            }
+            input, select, button {
+                padding: 8px 4px;
+                font-size: 14px;
+            }
+            button {
+                flex-basis: 100%; /* Forces button to full width at bottom */
+                margin-top: 5px;
+                padding: 10px;
+            }
+            #canvas-container {
+                padding: 5px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-panel">
+        <h2>Sim Config</h2>
+        <div class="input-group">
+            <label>Survivors</label>
+            <input type="number" id="survivorCount" value="15" min="1" max="100">
+        </div>
+        
+        <div class="input-group">
+            <label>Monsters</label>
+            <input type="number" id="monsterCount" value="2" min="1" max="10">
+        </div>
+        
+        <div class="input-group">
+            <label>Map Type</label>
+            <select id="mapType">
+                <option value="arena">Wasteland</option>
+                <option value="blocks">Ruined City</option>
+                <option value="forest">Forest</option>
+            </select>
+        </div>
+
+        <div class="input-group">
+            <label>Time (Secs)</label>
+            <input type="number" id="simTime" value="60" min="30" max="300" step="30">
+        </div>
+
+        <button onclick="startSimulation()">Start Simulation</button>
+    </div>
+
+    <div id="canvas-container">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        let survivors = [];
+        let monsters = [];
+        let weapons = [];
+        let walls = [];
+        let trees = [];
+        let bushes = [];
+        let projectiles = [];
+        let captured = [];
+        let simulationRunning = false;
+        let animationFrameId;
+        let timeRemaining = 60;
+        let totalTime = 60;
+        let lastTime = 0;
+        let safeZone = {x: 0, y: 0, w: 40, h: 40, isOpen: false};
+        let savedCount = 0;
+
+        // Resize canvas to fit screen beautifully
+        function resizeCanvas() {
+            const container = document.getElementById('canvas-container');
+            if (!container) return;
+            
+            // Get dimensions accounting for padding safely
+            const rect = container.getBoundingClientRect();
+            const maxWidth = rect.width - 20; 
+            const maxHeight = rect.height - 20;
+            
+            // Maintain a 4:3 aspect ratio
+            const ratio = Math.min(maxWidth / 800, maxHeight / 600);
+            
+            if (ratio > 0) {
+                if (ratio < 1) {
+                    canvas.style.width = `${800 * ratio}px`;
+                    canvas.style.height = `${600 * ratio}px`;
+                } else {
+                    canvas.style.width = `800px`;
+                    canvas.style.height = `600px`;
+                }
+            }
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+
+        function getFreePosition(radius) {
+            let x, y, free;
+            let attempts = 0;
+            do {
+                free = true;
+                x = Math.random() * 700 + 50;
+                y = Math.random() * 500 + 50;
+                for (let wall of walls) {
+                    if (x + radius > wall.x && x - radius < wall.x + wall.w &&
+                        y + radius > wall.y && y - radius < wall.y + wall.h) {
+                        free = false;
+                        break;
+                    }
+                }
+                for (let tree of trees) {
+                    if (Math.hypot(x - tree.x, y - tree.y) < tree.r + radius) {
+                        free = false;
+                        break;
+                    }
+                }
+                attempts++;
+            } while(!free && attempts < 100);
+            return {x, y};
+        }
+
+        // Helper function to check if vision is blocked by walls or trees
+        function checkLineOfSight(x1, y1, x2, y2) {
+            let steps = 15; // Number of points to sample along the line
+            for(let i = 1; i <= steps; i++) {
+                let px = x1 + (x2 - x1) * (i / steps);
+                let py = y1 + (y2 - y1) * (i / steps);
+                for(let wall of walls) {
+                    if (px > wall.x && px < wall.x + wall.w && py > wall.y && py < wall.y + wall.h) {
+                        return false; // Vision is blocked
+                    }
+                }
+                for(let tree of trees) {
+                    if (Math.hypot(px - tree.x, py - tree.y) < tree.r) {
+                        return false; // Vision is blocked by tree
+                    }
+                }
+            }
+            return true; // Clear line of sight
+        }
+
+        class Entity {
+            constructor(x, y, color, speed, radius, maxHp) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.speed = speed;
+                this.baseSpeed = speed;
+                this.radius = radius;
+                this.maxHp = maxHp;
+                this.hp = maxHp;
+                this.isHidden = false;
+                this.vx = (Math.random() - 0.5) * 2;
+                this.vy = (Math.random() - 0.5) * 2;
+            }
+
+            move() {
+                // Normalize velocity
+                const mag = Math.sqrt(this.vx * this.vx + this.vy * this.vy) || 1;
+                this.vx = (this.vx / mag) * this.speed;
+                this.vy = (this.vy / mag) * this.speed;
+
+                let nextX = this.x + this.vx;
+                let nextY = this.y + this.vy;
+
+                // Wall collisions (bounce)
+                if (nextX < this.radius || nextX > canvas.width - this.radius) {
+                    this.vx *= -1;
+                    nextX = this.x + this.vx;
+                }
+                if (nextY < this.radius || nextY > canvas.height - this.radius) {
+                    this.vy *= -1;
+                    nextY = this.y + this.vy;
+                }
+
+                // Obstacle collisions
+                walls.forEach(wall => {
+                    if (nextX + this.radius > wall.x && nextX - this.radius < wall.x + wall.w &&
+                        nextY + this.radius > wall.y && nextY - this.radius < wall.y + wall.h) {
+                        
+                        // Determine which side we hit to bounce correctly
+                        const overlapX = Math.min(nextX + this.radius - wall.x, wall.x + wall.w - (nextX - this.radius));
+                        const overlapY = Math.min(nextY + this.radius - wall.y, wall.y + wall.h - (nextY - this.radius));
+
+                        if (overlapX < overlapY) {
+                            this.vx *= -1;
+                            this.vy += (Math.random() - 0.5); // Add jitter to prevent sliding stuck
+                            // Push physically out of the wall to prevent clipping
+                            if (this.x < wall.x + wall.w / 2) nextX = wall.x - this.radius;
+                            else nextX = wall.x + wall.w + this.radius;
+                        } else {
+                            this.vy *= -1;
+                            this.vx += (Math.random() - 0.5); // Add jitter to prevent sliding stuck
+                            if (this.y < wall.y + wall.h / 2) nextY = wall.y - this.radius;
+                            else nextY = wall.y + wall.h + this.radius;
+                        }
+                    }
+                });
+
+                // Tree collisions (Circular bounce)
+                trees.forEach(tree => {
+                    let dx = nextX - tree.x;
+                    let dy = nextY - tree.y;
+                    let dist = Math.hypot(dx, dy);
+                    let minDist = this.radius + tree.r;
+                    
+                    if (dist < minDist) {
+                        let nx = dx / dist;
+                        let ny = dy / dist;
+                        
+                        // Reflect velocity
+                        let dot = this.vx * nx + this.vy * ny;
+                        this.vx = this.vx - 2 * dot * nx;
+                        this.vy = this.vy - 2 * dot * ny;
+                        
+                        // Jitter to prevent getting stuck
+                        this.vx += (Math.random() - 0.5) * 0.5;
+                        this.vy += (Math.random() - 0.5) * 0.5;
+
+                        // Push out
+                        nextX = tree.x + nx * minDist;
+                        nextY = tree.y + ny * minDist;
+                    }
+                });
+
+                this.x = nextX;
+                this.y = nextY;
+            }
+
+            draw() {
+                ctx.globalAlpha = this.isHidden ? 0.4 : 1.0;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.closePath();
+
+                // Draw health bar
+                const barWidth = this.radius * 2.5;
+                const barHeight = 4;
+                const healthPercent = Math.max(0, this.hp / this.maxHp);
+                
+                ctx.fillStyle = '#111';
+                ctx.fillRect(this.x - barWidth/2, this.y - this.radius - 8, barWidth, barHeight);
+                ctx.fillStyle = this.color === '#780000' ? '#e60000' : '#4caf50'; // Red for monsters, green for survivors
+                ctx.fillRect(this.x - barWidth/2, this.y - this.radius - 8, barWidth * healthPercent, barHeight);
+                ctx.globalAlpha = 1.0;
+            }
+        }
+
+        class Projectile {
+            constructor(x, y, vx, vy) {
+                this.x = x;
+                this.y = y;
+                this.vx = vx;
+                this.vy = vy;
+                this.radius = 3;
+            }
+            
+            move() {
+                this.x += this.vx;
+                this.y += this.vy;
+            }
+            
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = '#ffb732'; // Bullet flash
+                ctx.fill();
+                ctx.closePath();
+            }
+        }
+
+        class Survivor extends Entity {
+            constructor(x, y) {
+                super(x, y, '#a88f72', 2, 6, 1);
+                this.ammo = 0;
+                this.shootCooldown = 0;
+            }
+            
+            updateAI() {
+                if (!simulationRunning) return;
+                
+                // Desperation speed boost in the last 20 seconds
+                let desperationMultiplier = (timeRemaining <= 20) ? 1.6 : 1.0;
+                if (this.ammo <= 0) {
+                    this.speed = this.baseSpeed * desperationMultiplier;
+                }
+
+                // Hiding logic
+                this.isHidden = false;
+                let inBush = bushes.find(b => Math.hypot(this.x - b.x, this.y - b.y) < b.r);
+                if (inBush && this.ammo <= 0) {
+                    this.isHidden = true;
+                }
+
+                if (this.ammo > 0) {
+                    // Attack Mode
+                    let nearestMonster = null;
+                    let minDist = Infinity;
+                    
+                    monsters.forEach(m => {
+                        const dist = Math.hypot(this.x - m.x, this.y - m.y);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            nearestMonster = m;
+                        }
+                    });
+
+                    if (nearestMonster) {
+                        // Move towards monster
+                        this.vx = nearestMonster.x - this.x;
+                        this.vy = nearestMonster.y - this.y;
+
+                        // Shoot!
+                        if (minDist < 200 && this.shootCooldown <= 0) {
+                            const angle = Math.atan2(nearestMonster.y - this.y, nearestMonster.x - this.x);
+                            projectiles.push(new Projectile(this.x, this.y, Math.cos(angle) * 8, Math.sin(angle) * 8));
+                            this.ammo--;
+                            this.shootCooldown = 45; // Cooldown frames
+                            
+                            if (this.ammo <= 0) {
+                                this.color = '#a88f72';
+                                this.speed = this.baseSpeed;
+                            }
+                        }
+                    }
+                } else {
+                    // Panic / Hide Mode
+                    let nearestMonster = null;
+                    let minDistToMonster = Infinity;
+                    
+                    monsters.forEach(m => {
+                        const dist = Math.hypot(this.x - m.x, this.y - m.y);
+                        if (dist < minDistToMonster) {
+                            minDistToMonster = dist;
+                            nearestMonster = m;
+                        }
+                    });
+
+                    let nearestBush = null;
+                    let minDistToBush = Infinity;
+                    bushes.forEach(b => {
+                        const dist = Math.hypot(this.x - b.x, this.y - b.y);
+                        if (dist < minDistToBush) {
+                            minDistToBush = dist;
+                            nearestBush = b;
+                        }
+                    });
+
+                    // Panic distance shrinks drastically if hidden
+                    let panicDistance = this.isHidden ? 45 : 150;
+
+                    if (minDistToMonster < panicDistance) {
+                        // Run away from monster!
+                        this.isHidden = false; // Break cover
+                        this.vx = this.x - nearestMonster.x;
+                        this.vy = this.y - nearestMonster.y;
+                    } else if (safeZone.isOpen && Math.hypot(this.x - (safeZone.x + safeZone.w/2), this.y - (safeZone.y + safeZone.h/2)) < 150) {
+                        // Desperately seek the Extraction zone, but ONLY if they are close enough to see it!
+                        this.isHidden = false; // Break cover
+                        this.vx = (safeZone.x + safeZone.w/2) - this.x;
+                        this.vy = (safeZone.y + safeZone.h/2) - this.y;
+                    } else if (minDistToBush < 250 && !this.isHidden && !inBush) {
+                        // Seek nearest bush if not currently hiding
+                        this.vx = nearestBush.x - this.x;
+                        this.vy = nearestBush.y - this.y;
+                    } else if (this.isHidden) {
+                        // Stay safely hidden!
+                        this.vx = 0;
+                        this.vy = 0;
+                    } else {
+                        // Wander aimlessly (become more erratic if desperate)
+                        if (Math.random() < (timeRemaining <= 20 ? 0.1 : 0.05)) {
+                            this.vx += (Math.random() - 0.5) * 2;
+                            this.vy += (Math.random() - 0.5) * 2;
+                        }
+                    }
+                }
+
+                if (this.shootCooldown > 0) this.shootCooldown--;
+
+                // Check for weapons
+                weapons.forEach((w, index) => {
+                    if (Math.hypot(this.x - w.x, this.y - w.y) < this.radius + 12) {
+                        this.ammo = 2; // Grab 2 bullets
+                        this.color = '#e07a26'; // Armed rusty orange
+                        this.speed = 3.5; // Aggressive speed
+                        weapons.splice(index, 1); // Consume weapon box
+                    }
+                });
+
+                this.move();
+            }
+        }
+
+        class Monster extends Entity {
+            constructor(x, y) {
+                super(x, y, '#780000', 2.1, 10, 5);
+            }
+
+            updateAI() {
+                if (!simulationRunning || survivors.length === 0) {
+                    // Just wander if no survivors
+                    if (Math.random() < 0.05) {
+                        this.vx += (Math.random() - 0.5);
+                        this.vy += (Math.random() - 0.5);
+                    }
+                    this.move();
+                    return;
+                }
+
+                let currentAngle = Math.atan2(this.vy, this.vx);
+                let targetSurvivor = null;
+                let minDist = Infinity;
+                
+                let viewAngle = Math.PI / 1.5; // 120 degree vision cone
+
+                survivors.forEach(s => {
+                    const dist = Math.hypot(this.x - s.x, this.y - s.y);
+                    if (dist < minDist) {
+                        let canTarget = false;
+
+                        // Sense Radii modified by hiding status
+                        let hearRadius = s.isHidden ? 0 : 100;
+                        let viewRadius = s.isHidden ? 0 : 250;
+                        let proximityRadius = s.isHidden ? 40 : 10; // Must practically step on them if hiding
+
+                        // 1. Proximity check (too close even if hiding)
+                        if (dist < proximityRadius) {
+                            canTarget = true;
+                        }
+                        // 2. Hearing check (Proximate distance, works through walls)
+                        else if (dist < hearRadius) {
+                            canTarget = true;
+                        } 
+                        // 3. Vision check (Within cone AND line of sight)
+                        else if (dist < viewRadius) {
+                            let angleToS = Math.atan2(s.y - this.y, s.x - this.x);
+                            let angleDiff = Math.abs(angleToS - currentAngle);
+                            
+                            // Normalize angle difference to [0, PI]
+                            angleDiff = Math.min(2 * Math.PI - angleDiff, angleDiff);
+                            
+                            if (angleDiff < viewAngle / 2) {
+                                // Check if walls block the vision
+                                if (checkLineOfSight(this.x, this.y, s.x, s.y)) {
+                                    canTarget = true;
+                                }
+                            }
+                        }
+
+                        if (canTarget) {
+                            minDist = dist;
+                            targetSurvivor = s;
+                        }
+                    }
+                });
+
+                if (targetSurvivor) {
+                    // Chase the detected human!
+                    this.vx = targetSurvivor.x - this.x;
+                    this.vy = targetSurvivor.y - this.y;
+                } else {
+                    // Wander aimlessly if nothing is seen or heard
+                    if (Math.random() < 0.05) {
+                        this.vx += (Math.random() - 0.5) * 2;
+                        this.vy += (Math.random() - 0.5) * 2;
+                    }
+                }
+
+                this.move();
+            }
+
+            draw() {
+                if (simulationRunning) {
+                    let currentAngle = Math.atan2(this.vy, this.vx);
+                    
+                    // Draw view cone
+                    ctx.beginPath();
+                    ctx.moveTo(this.x, this.y);
+                    ctx.arc(this.x, this.y, 250, currentAngle - Math.PI/3, currentAngle + Math.PI/3);
+                    ctx.fillStyle = 'rgba(255, 0, 0, 0.05)';
+                    ctx.fill();
+
+                    // Draw hearing radius
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, 100, 0, Math.PI * 2);
+                    ctx.strokeStyle = 'rgba(255, 0, 0, 0.1)';
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
+                }
+                
+                // Draw base monster
+                super.draw();
+            }
+        }
+
+        function generateMap(type) {
+            walls = [];
+            trees = [];
+            bushes = [];
+            weapons = [];
+            if (type === 'blocks') {
+                for (let i = 0; i < 12; i++) {
+                    walls.push({
+                        x: Math.random() * 600 + 50,
+                        y: Math.random() * 400 + 50,
+                        w: Math.random() * 80 + 30,
+                        h: Math.random() * 80 + 30
+                    });
+                }
+            } else if (type === 'forest') {
+                // Generate bushes for hiding
+                for (let i = 0; i < 4; i++) {
+                    bushes.push({
+                        x: Math.random() * 600 + 100,
+                        y: Math.random() * 400 + 100,
+                        r: 35
+                    });
+                }
+                // Generate trees as round obstacles
+                for (let i = 0; i < 16; i++) {
+                    trees.push({
+                        x: Math.random() * 600 + 100,
+                        y: Math.random() * 400 + 100,
+                        r: Math.random() * 15 + 15
+                    });
+                }
+            }
+
+            // Create Safe Zone Door (Ensure it's not entirely inside a wall or tree)
+            let sx, sy, sFree;
+            do {
+                sFree = true;
+                sx = Math.random() * 600 + 100;
+                sy = Math.random() * 400 + 100;
+                for (let wall of walls) {
+                    if (sx + 40 > wall.x && sx < wall.x + wall.w && sy + 40 > wall.y && sy < wall.y + wall.h) {
+                        sFree = false; break;
+                    }
+                }
+                for (let tree of trees) {
+                    if (Math.hypot((sx + 20) - tree.x, (sy + 20) - tree.y) < tree.r + 20) {
+                        sFree = false; break;
+                    }
+                }
+            } while(!sFree);
+            safeZone = { x: sx, y: sy, w: 40, h: 40, isOpen: false };
+
+            // Spawn some initial weapon crates using free position logic
+            for (let i = 0; i < 8; i++) {
+                let pos = getFreePosition(6);
+                weapons.push({
+                    x: pos.x,
+                    y: pos.y
+                });
+            }
+        }
+
+        function startSimulation() {
+            const sCount = parseInt(document.getElementById('survivorCount').value) || 10;
+            const mCount = parseInt(document.getElementById('monsterCount').value) || 1;
+            const mType = document.getElementById('mapType').value;
+            const timeInput = parseInt(document.getElementById('simTime').value) || 60;
+
+            survivors = [];
+            monsters = [];
+            projectiles = [];
+            captured = [];
+            savedCount = 0;
+            
+            // Clamp time between 30 and 300 seconds
+            totalTime = Math.max(30, Math.min(300, timeInput));
+            timeRemaining = totalTime;
+            lastTime = Date.now();
+            
+            generateMap(mType);
+
+            for (let i = 0; i < sCount; i++) {
+                let pos = getFreePosition(6);
+                survivors.push(new Survivor(pos.x, pos.y));
+            }
+            for (let i = 0; i < mCount; i++) {
+                let pos = getFreePosition(10);
+                monsters.push(new Monster(pos.x, pos.y));
+            }
+
+            simulationRunning = true;
+        }
+
+        function checkCombats() {
+            // Check Safe Zone Entry
+            if (safeZone.isOpen) {
+                for (let i = survivors.length - 1; i >= 0; i--) {
+                    let s = survivors[i];
+                    if (s.x > safeZone.x && s.x < safeZone.x + safeZone.w &&
+                        s.y > safeZone.y && s.y < safeZone.y + safeZone.h) {
+                        survivors.splice(i, 1); // Remove from map
+                        savedCount++; // Increment rescued counter
+                    }
+                }
+            }
+
+            // Check Projectile hits on Monsters
+            for (let i = projectiles.length - 1; i >= 0; i--) {
+                let p = projectiles[i];
+                let hit = false;
+                
+                // Out of bounds remove
+                if (p.x < 0 || p.x > canvas.width || p.y < 0 || p.y > canvas.height) {
+                    projectiles.splice(i, 1);
+                    continue;
+                }
+
+                for (let j = monsters.length - 1; j >= 0; j--) {
+                    let m = monsters[j];
+                    if (Math.hypot(p.x - m.x, p.y - m.y) < m.radius + p.radius) {
+                        m.hp--;
+                        hit = true;
+                        if (m.hp <= 0) {
+                            monsters.splice(j, 1);
+                        }
+                        break;
+                    }
+                }
+                
+                // Hit wall remove
+                if (!hit) {
+                    for (let wall of walls) {
+                        if (p.x > wall.x && p.x < wall.x + wall.w && p.y > wall.y && p.y < wall.y + wall.h) {
+                            hit = true;
+                            break;
+                        }
+                    }
+                    for (let tree of trees) {
+                        if (Math.hypot(p.x - tree.x, p.y - tree.y) < tree.r + p.radius) {
+                            hit = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (hit) projectiles.splice(i, 1);
+            }
+
+            // Check Monster catching Survivors
+            for (let i = survivors.length - 1; i >= 0; i--) {
+                for (let j = monsters.length - 1; j >= 0; j--) {
+                    const s = survivors[i];
+                    const m = monsters[j];
+                    if (Math.hypot(s.x - m.x, s.y - m.y) < s.radius + m.radius) {
+                        // Human captured/killed
+                        s.hp--;
+                        if (s.hp <= 0) {
+                            captured.push({x: s.x, y: s.y}); // Leave a carcass/mark
+                            survivors.splice(i, 1);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        function gameLoop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Timer update
+            if (simulationRunning) {
+                let now = Date.now();
+                let dt = (now - lastTime) / 1000;
+                lastTime = now;
+                timeRemaining -= dt;
+
+                // Open door at 1/3 time remaining (2/3 time passed)
+                if (timeRemaining <= totalTime / 3 && !safeZone.isOpen) {
+                    safeZone.isOpen = true;
+                }
+
+                if (timeRemaining <= 0) {
+                    timeRemaining = 0;
+                    simulationRunning = false; // Time up, humans survived
+                }
+            }
+
+            // Draw walls (Ruins)
+            ctx.fillStyle = '#1c120c';
+            walls.forEach(w => {
+                ctx.fillRect(w.x, w.y, w.w, w.h);
+                // Detail lines to look like bricks/debris
+                ctx.strokeStyle = '#2b1b12';
+                ctx.strokeRect(w.x+2, w.y+2, w.w-4, w.h-4);
+            });
+
+            // Draw Bushes (Hiding Spots)
+            bushes.forEach(b => {
+                ctx.beginPath();
+                ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(46, 117, 50, 0.25)'; // Transparent leafy green
+                ctx.fill();
+                ctx.strokeStyle = '#1e5622';
+                ctx.setLineDash([4, 6]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            });
+
+            // Draw captured humans
+            ctx.fillStyle = '#453a33'; // Greyish brown carcass
+            captured.forEach(c => {
+                ctx.beginPath();
+                ctx.arc(c.x, c.y, 6, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.closePath();
+            });
+
+            // Draw weapon crates
+            weapons.forEach(w => {
+                ctx.fillStyle = '#4a2e1b'; // Wooden crate brown
+                ctx.fillRect(w.x - 6, w.y - 6, 12, 12);
+                ctx.fillStyle = '#5c9e42'; // Glowing loot indicator
+                ctx.fillRect(w.x - 2, w.y - 2, 4, 4);
+            });
+
+            // Draw Safe Zone Door
+            if (safeZone.isOpen) {
+                ctx.fillStyle = 'rgba(0, 168, 255, 0.2)'; // Glowing aura
+                ctx.fillRect(safeZone.x - 10, safeZone.y - 10, safeZone.w + 20, safeZone.h + 20);
+                
+                ctx.fillStyle = '#005f99'; // Deep blue door frame
+                ctx.fillRect(safeZone.x, safeZone.y, safeZone.w, safeZone.h);
+                
+                ctx.fillStyle = '#00a8ff'; // Bright blue center
+                ctx.fillRect(safeZone.x + 5, safeZone.y + 5, safeZone.w - 10, safeZone.h - 10);
+                
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 10px "Courier New"';
+                ctx.textAlign = 'center';
+                ctx.fillText('EXTRACT', safeZone.x + safeZone.w/2, safeZone.y + safeZone.h/2 + 3);
+            }
+
+            // Draw Trees (Solid Obstacles)
+            trees.forEach(t => {
+                // Leaves
+                ctx.beginPath();
+                ctx.arc(t.x, t.y, t.r, 0, Math.PI * 2);
+                ctx.fillStyle = '#1a3c1a'; // Dark pine green
+                ctx.fill();
+                // Trunk core
+                ctx.beginPath();
+                ctx.arc(t.x, t.y, t.r * 0.4, 0, Math.PI * 2);
+                ctx.fillStyle = '#3a2311'; // Bark brown
+                ctx.fill();
+            });
+
+            if (simulationRunning || true) { // Always draw entities even if paused at end
+                checkCombats();
+                
+                projectiles.forEach(p => {
+                    if (simulationRunning) p.move();
+                    p.draw();
+                });
+                
+                survivors.forEach(s => { 
+                    if (simulationRunning) s.updateAI(); 
+                    s.draw(); 
+                });
+                
+                monsters.forEach(m => { 
+                    if (simulationRunning) m.updateAI(); 
+                    m.draw(); 
+                });
+                
+                if (simulationRunning && (survivors.length === 0 || monsters.length === 0)) {
+                    simulationRunning = false;
+                }
+            }
+
+            // Draw HUD Timer
+            ctx.fillStyle = "rgba(10, 5, 2, 0.7)";
+            ctx.fillRect(10, 10, 180, 70);
+            ctx.fillStyle = timeRemaining > 20 ? "#c4a482" : "#e60000";
+            ctx.font = "bold 20px 'Courier New'";
+            ctx.textAlign = "left";
+            ctx.fillText(`TIME: ${Math.ceil(timeRemaining)}s`, 20, 35);
+            ctx.fillStyle = "#00a8ff";
+            ctx.fillText(`SAVED: ${savedCount}`, 20, 65);
+
+            // Draw game over state
+            if (!simulationRunning && (survivors.length === 0 || monsters.length === 0 || timeRemaining <= 0) && (survivors.length > 0 || monsters.length > 0 || walls.length > 0 || captured.length > 0 || savedCount > 0)) {
+                ctx.fillStyle = "rgba(10, 5, 2, 0.85)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.font = "bold 40px 'Courier New'";
+                ctx.textAlign = "center";
+                
+                if (survivors.length === 0 && savedCount === 0) {
+                    ctx.fillStyle = "#e60000";
+                    ctx.fillText("HUMANITY CONSUMED", canvas.width/2, canvas.height/2);
+                } else if (monsters.length === 0) {
+                    ctx.fillStyle = "#5c9e42";
+                    ctx.fillText("THREAT EXTERMINATED", canvas.width/2, canvas.height/2 - 20);
+                    ctx.font = "bold 24px 'Courier New'";
+                    ctx.fillText(`${savedCount + survivors.length} SURVIVED`, canvas.width/2, canvas.height/2 + 20);
+                } else if (timeRemaining <= 0 || savedCount > 0) {
+                    ctx.fillStyle = "#00a8ff";
+                    ctx.fillText("SIMULATION ENDED", canvas.width/2, canvas.height/2 - 20);
+                    ctx.font = "bold 24px 'Courier New'";
+                    ctx.fillText(`${savedCount} ESCAPED, ${survivors.length} SURVIVED`, canvas.width/2, canvas.height/2 + 20);
+                }
+            }
+
+            animationFrameId = requestAnimationFrame(gameLoop);
+        }
+
+        // Initialize on load
+        window.onload = () => {
+            resizeCanvas();
+            gameLoop();
+        };
+
+    </script>
+</body>
+</html>
